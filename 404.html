@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Redirect</title>
+    <script>
+      // Preserve path and redirect alla root dell'app su Pages
+      sessionStorage.redirect = location.pathname + location.search + location.hash;
+      location.replace('/inforef_demo_sicilia/');
+    </script>
+  </head>
+  <body></body>
+</html>
