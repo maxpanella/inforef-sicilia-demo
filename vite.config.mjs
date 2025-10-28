@@ -3,9 +3,7 @@ import vue from '@vitejs/plugin-vue'
 
 const isProd = process.env.NODE_ENV === 'production'
 
-// Base per GitHub Pages:
-// - In CI (GitHub Actions) GITHUB_REPOSITORY è "owner/repo" -> estraiamo "repo"
-// - In alternativa puoi definire REPO_BASE, altrimenti fallback al nome attuale del repo
+// Base dinamica per GitHub Pages
 let basePath = '/'
 if (isProd) {
   const repoFromGH = process.env.GITHUB_REPOSITORY?.split('/')[1]
