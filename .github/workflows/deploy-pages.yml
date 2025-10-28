@@ -9,7 +9,6 @@ permissions:
   pages: write
   id-token: write
 
-# Evita code di run: tiene solo l'ultimo attivo
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -17,6 +16,10 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      NODE_ENV: production
+      # Rende il base di Vite indipendente dal nome del repo
+      REPO_BASE: ${{ github.event.repository.name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,8 +28,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'npm'
 
-      # Più robusto se manca package-lock.json
       - name: Install dependencies
         run: npm install
 
