@@ -26,6 +26,17 @@
           <button @click="simulateOnce" :disabled="overviewMode">Simula sample</button>
         </div>
 
+        <!-- Destinazione e simulazione ambulanza -->
+        <div class="btn-row">
+          <label style="color:#cbd5e1;align-self:flex-start;margin-top:8px">Destinazione</label>
+          <select v-model="targetSiteId">
+            <option v-for="s in sites" :key="s.id" :value="s.id">{{ s.ragioneSociale }}</option>
+          </select>
+        </div>
+        <div class="btn-row">
+          <button @click="simulateAmbulance" :disabled="!selectedSiteId || !targetSiteId || selectedSiteId===targetSiteId">Simula ambulanza</button>
+        </div>
+
         <!-- Pulsante test apertura manutenzione -->
         <div class="btn-row">
           <button @click="openMaintenanceTest">Test manutenzione (ECG)</button>
@@ -202,13 +213,13 @@ import OSM from 'ol/source/OSM'
 import VectorLayer from 'ol/layer/Vector'
 import VectorSource from 'ol/source/Vector'
 import Feature from 'ol/Feature'
-import { Point } from 'ol/geom'
+import { Point, LineString } from 'ol/geom'
 import Style from 'ol/style/Style'
 import CircleStyle from 'ol/style/Circle'
 import Stroke from 'ol/style/Stroke'
 import Fill from 'ol/style/Fill'
 import Text from 'ol/style/Text'
-import { fromLonLat } from 'ol/proj'
+import { fromLonLat, toLonLat } from 'ol/proj'
 
 import CameraModal from './CameraModal.vue'
 import MaintenanceList from './MaintenanceList.vue'
@@ -233,6 +244,10 @@ const featureMap = new globalThis.Map()
 
 const mapWrapEl = ref(null)
 let ro = null
+
+// Simulazione veicolo
+const targetSiteId = ref(sites[1]?.id || sites[0]?.id || null)
+let currentSimCancel = null
 
 // Stato vista
 const overviewMode = ref(true)
@@ -262,7 +277,6 @@ function getDeptKey(a){
   const cat  = (a.categoria||'').toLowerCase()
   const stanza = (a.stanza||'').toLowerCase()
 
-  // Letto sempre in Degenza
   if (tipo.includes('letto')) return 'Degenza'
 
   if (cat === 'personale') {
@@ -276,7 +290,7 @@ function getDeptKey(a){
   }
   if (cat === 'sensor' || tipo.includes('sensore')) {
     if (tipo.includes('letto') || stanza.includes('camera')) return 'Degenza'
-    if (tipo.includes('porta') || stanza.includes('uscita')) return 'Esterni'
+    if (tipo.includes('porta') || tipo.includes('uscita')) return 'Esterni'
     if (tipo.includes('caduta') || stanza.includes('corridoio')) return 'Corridoi'
     if (stanza.includes('bagno')) return 'Bagni assistiti'
     return 'Sicurezza'
@@ -341,7 +355,7 @@ function toggleSection(key){
 function expandAll(){ openSections.value = new Set(groupedByDept.value.map(s => s.key)) }
 function collapseAll(){ openSections.value = new Set() }
 
-// Trasformazione coordinate
+// Trasformazione coordinate (DXF -> map space)
 function transformDxf(x, y) {
   const x_m = (Number(x) || 0) / 1000, y_m = (Number(y) || 0) / 1000
   const theta = rotationDeg * Math.PI / 180
@@ -355,8 +369,15 @@ function addEvent(msg) {
   if (events.value.length > 300) events.value.pop()
 }
 
-// Stili
+// Stili marker (esteso per veicolo/ambulanza)
 function makeStyle(a) {
+  // stile per veicolo / ambulanza
+  if ((a.tipo||'').toLowerCase() === 'ambulanza' || (a.categoria||'').toLowerCase() === 'veicolo') {
+    return new Style({
+      image: new CircleStyle({ radius: 12, fill: new Fill({ color: '#ef4444' }), stroke: new Stroke({ color:'#fff', width:2 }) }),
+      text: new Text({ text: a.nome || 'Amb.', offsetY: -20, fill: new Fill({ color:'#0f274f' }), font:'600 12px Inter, Arial' })
+    })
+  }
   const color =
     a.categoria === 'personale' ? '#2563eb' :
     a.categoria === 'dispositivo-medico' ? '#16a34a' :
@@ -409,7 +430,11 @@ function refreshAssets() {
   const visibleIds = new Set()
   for (const a of filteredAssets.value) {
     const id = a.id
-    const coords = transformDxf(a.x || 0, a.y || 0)
+    // if asset has lon/lat use it, otherwise use DXF transform
+    const coords = (a.lon != null && a.lat != null)
+      ? fromLonLat([Number(a.lon), Number(a.lat)])
+      : transformDxf(a.x || 0, a.y || 0)
+
     let f = featureMap.get(id)
     if (!f) {
       f = new Feature({ geometry: new Point(coords) })
@@ -442,7 +467,7 @@ function refreshSites() {
   }
 }
 
-// Animazione
+// Animazione semplice per feature
 function animateFeatureTo(feat, target, duration = 300) {
   if (!feat) return
   const geom = feat.getGeometry()
@@ -501,7 +526,10 @@ function applySite(siteId) {
   const lon = Number(s.lon), lat = Number(s.lat)
   if (Number.isFinite(lon) && Number.isFinite(lat)) {
     defaultCenter = fromLonLat([lon, lat])
-    if (map) map.getView().animate({ center: defaultCenter, duration: 350, zoom: 18 })
+    if (map) {
+      map.getView().animate({ center: defaultCenter, duration: 350, zoom: 18 })
+      nextTick(() => { map.updateSize && map.updateSize() })
+    }
   }
 }
 function showOverview() {
@@ -509,14 +537,20 @@ function showOverview() {
   rotationDeg = 0
   clearAssetsLayer()
   refreshSites()
-  nextTick(() => fitAllSites())
+  nextTick(() => {
+    if (map) map.updateSize && map.updateSize()
+    fitAllSites()
+  })
 }
 function showSiteView() {
   overviewMode.value = false
   if (!selectedSiteId.value && sites[0]) selectedSiteId.value = sites[0].id
   applySite(selectedSiteId.value)
   refreshAssets()
-  nextTick(() => fitAll())
+  nextTick(() => {
+    if (map) map.updateSize && map.updateSize()
+    fitAll()
+  })
 }
 function fitAll() {
   if (!map || !assetSrc || overviewMode.value) return
@@ -571,6 +605,126 @@ function applySample(sample) {
   } else {
     addEvent(`Unmapped tag ${tagId}`)
   }
+}
+
+// --- helper: costruisce una route "curvata" con punto intermedio offset per simulare svolta/strada ---
+function buildCurvedRoute(fromCoord, toCoord, maxOffset = null) {
+  const dx = toCoord[0] - fromCoord[0]
+  const dy = toCoord[1] - fromCoord[1]
+  const len = Math.hypot(dx, dy) || 1
+  const mid = [(fromCoord[0] + toCoord[0]) / 2, (fromCoord[1] + toCoord[1]) / 2]
+  const nx = -dy / len
+  const ny = dx / len
+  const offset = Math.min(maxOffset || len * 0.2, len * 0.2)
+  mid[0] += nx * offset
+  mid[1] += ny * offset
+  return [fromCoord, mid, toCoord]
+}
+
+// --- funzione che crea/aggiorna asset "ambulance" e lo anima; ora l'ambulanza è un asset nel dataset ---
+function simulateVehicleRouteAsAsset(fromSiteId, toSiteId, duration = 15000) {
+  if (!map || !sites) return null
+  const fromSite = sites.find(s => s.id === fromSiteId)
+  const toSite = sites.find(s => s.id === toSiteId)
+  if (!fromSite || !toSite) {
+    addEvent('simulateVehicleRouteAsAsset: sito non trovato')
+    return null
+  }
+
+  const vehId = 'ambulance-1'
+  let veh = assetList.value.find(a => a.id === vehId)
+  if (!veh) {
+    veh = {
+      id: vehId,
+      nome: 'Ambulanza 1',
+      categoria: 'veicolo',
+      tipo: 'ambulanza',
+      siteId: fromSiteId,
+      lon: Number(fromSite.lon),
+      lat: Number(fromSite.lat)
+    }
+    assetList.value.push(veh)
+  } else {
+    veh.siteId = fromSiteId
+    veh.lon = Number(fromSite.lon)
+    veh.lat = Number(fromSite.lat)
+  }
+
+  let vehFeature = featureMap.get(vehId)
+  const fromCoord = fromLonLat([Number(fromSite.lon), Number(fromSite.lat)])
+  const toCoord = fromLonLat([Number(toSite.lon), Number(toSite.lat)])
+
+  if (!vehFeature) {
+    vehFeature = new Feature({ geometry: new Point(fromCoord) })
+    vehFeature.setId(vehId)
+    vehFeature.setStyle(makeStyle(veh))
+    assetSrc.addFeature(vehFeature)
+    featureMap.set(vehId, vehFeature)
+  } else {
+    vehFeature.getGeometry().setCoordinates(fromCoord)
+    vehFeature.setStyle(makeStyle(veh))
+  }
+
+  const pts = buildCurvedRoute(fromCoord, toCoord)
+  const routeGeom = new LineString(pts)
+
+  let start = null, rafId = null
+  function step(ts) {
+    if (!start) start = ts
+    const elapsed = ts - start
+    const t = Math.min(1, elapsed / duration)
+    const coord = routeGeom.getCoordinateAt(t)
+    if (coord) {
+      vehFeature.getGeometry().setCoordinates(coord)
+      const ll = toLonLat(coord)
+      if (ll && Array.isArray(ll)) {
+        veh.lon = ll[0]; veh.lat = ll[1]
+      }
+      veh.siteId = 'in-transit'
+      // aggiorna lo stile se necessario
+      vehFeature.setStyle(makeStyle(veh))
+    }
+
+    if (t < 1) {
+      rafId = requestAnimationFrame(step)
+    } else {
+      veh.siteId = toSiteId
+      const finalLL = toLonLat(toCoord)
+      veh.lon = finalLL[0]; veh.lat = finalLL[1]
+      vehFeature.setStyle(makeStyle(veh))
+      currentSimCancel = null
+    }
+  }
+
+  rafId = requestAnimationFrame(step)
+
+  return () => {
+    if (rafId) cancelAnimationFrame(rafId)
+    try {
+      const f = featureMap.get(vehId)
+      if (f) {
+        assetSrc.removeFeature(f)
+        featureMap.delete(vehId)
+      }
+    } catch (e) {}
+    const idx = assetList.value.findIndex(a => a.id === vehId)
+    if (idx !== -1) assetList.value.splice(idx, 1)
+    currentSimCancel = null
+  }
+}
+
+// Simulazione ambulanza (bottone)
+function simulateAmbulance() {
+  if (!selectedSiteId.value || !targetSiteId.value || selectedSiteId.value === targetSiteId.value) {
+    addEvent('Simulazione non valida: seleziona due siti differenti')
+    return
+  }
+  if (typeof currentSimCancel === 'function') {
+    try { currentSimCancel() } catch(e) {}
+    currentSimCancel = null
+  }
+  currentSimCancel = simulateVehicleRouteAsAsset(selectedSiteId.value, targetSiteId.value, 18000)
+  addEvent(`Simulazione ambulanza: ${selectedSiteId.value} → ${targetSiteId.value}`)
 }
 
 // Azioni riga / modali
@@ -722,7 +876,9 @@ function computeRiskFor(siteId) {
     const acq = sk.acquired||[]
     const todo = sk.todo||[]
     const hasDpi = acq.some(s => /dpi|antincendio|sicurezza/i.test(s.name||'')) && !todo.some(s=>/dpi|antincendio|sicurezza/i.test(s.name||''))
+
     const hasVisit = !todo.some(s=>/visita/i.test(s.name||''))
+
     dpiCompliant += hasDpi ? 1 : 0
     visitsCompliant += hasVisit ? 1 : 0
   }
@@ -780,6 +936,10 @@ onMounted(() => {
 onUnmounted(() => {
   if (ro) ro.disconnect()
   stopDemo()
+  if (typeof currentSimCancel === 'function') {
+    try { currentSimCancel() } catch(e) {}
+    currentSimCancel = null
+  }
 })
 </script>
 
@@ -797,8 +957,10 @@ onUnmounted(() => {
 .events ul{list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px}
 .events li{font-size:12px;color:#e5e7eb}
 
-.main{flex:1 1 auto;min-width:0;padding:16px;display:flex;flex-direction:column;gap:16px}
-.map-wrapper{height:420px;max-height:420px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;background:#fff}
+/* layout principale: permettere alla mappa di crescere */
+.main{flex:1 1 auto;min-width:0;min-height:0;padding:16px;display:flex;flex-direction:column;gap:16px}
+/* map-wrapper flessibile: occupa lo spazio disponibile nella colonna principale */
+.map-wrapper{flex:1 1 auto;min-height:420px;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;background:#fff}
 #map{width:100%;height:100%;min-height:0}
 
 .overview{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:12px}
